@@ -1,0 +1,255 @@
+#!/bin/bash
+#
+# IPv6-in-IPv4 Tunnel Script
+# 
+# Author: sskaje (http://sskaje.me/ipv6/)
+# Version: 1.0
+#
+#
+
+SIPCALC=`which sipcalc`
+if [[ -z $SIPCALC ]]; then
+    echo "Missing dependencies:"
+    echo "    sipcalc required"
+    echo "" 
+    exit
+fi
+
+usage() {
+    echo "Usage:"
+    echo "$0 add|del|update TUNNEL_ID [REMOTE_IP]"
+    echo ""
+    exit
+}
+
+if [[ $# -lt 2 ]]; then
+    echo "Missing args"
+    usage
+    exit
+fi
+
+# Configuration File
+CONFIG_FILE=$(dirname $0)/../etc/config.ini
+
+# Read IPV6_NETWORK from Config
+IPV6_NETWORK=$(awk -F "=" '/^IPV6_NETWORK/ {print $2}' $CONFIG_FILE) 
+if [[ "$IPV6_NETWORK" == "" ]]; then
+    echo "Missing IPV6_NETWORK"
+    exit
+fi
+# sipcalc result
+SIPCALC_RESULT=$($SIPCALC $IPV6_NETWORK)
+
+if [[ -n $(echo $SIPCALC_RESULT | grep ERR) ]]; then
+    echo "Bad IPV6_NETWORK"
+    exit
+fi
+
+# Read IPV6_CIDR from Config
+IPV6_CIDR=$(awk -F "=" '/^IPV6_CIDR/ {print $2}' $CONFIG_FILE) 
+if [[ "$IPV6_CIDR" == "" ]]; then
+    echo "Missing IPV6_CIDR"
+    exit
+fi
+
+# IPV6_CIDR MUST BE ONE IN (8,16,24,32,40,48,56,64,72,80,88,96).
+# Just because I don't want to take too much time calculating CIDR using shell
+if [[ $(( $IPV6_CIDR % 8 )) -ne 0 ]]; then
+    echo "IPV6_CIDR MUST be a multiple of 8"
+    exit
+fi
+
+# Validate Tunnel ID
+validate_tunnel_id() {
+    if [[ $TUNNEL_ID -lt $TUNNEL_ID_MIN ]]; then
+        echo Invalid TUNNEL_ID $TUNNEL_ID. MUST BE ${TUNNEL_ID_MIN}-${TUNNEL_ID_MAX}
+        usage 
+        exit
+    fi
+
+    if [[ $TUNNEL_ID -gt $TUNNEL_ID_MAX ]]; then
+        echo Invalid TUNNEL_ID $TUNNEL_ID. MUST BE ${TUNNEL_ID_MIN}-${TUNNEL_ID_MAX}
+        usage
+        exit
+    fi
+}
+
+# Tunnel ID
+TUNNEL_ID=$2
+
+# Minimum Tunnel ID
+TUNNEL_ID_MIN=0
+
+# Recommended CIDR
+TARGET_CIDR=64
+
+EXPANDED_IPV6_ADDRESS=`echo "$SIPCALC_RESULT" | fgrep Expanded | awk -F '-' '{print $2}'`
+
+if [[ $IPV6_CIDR -ge $TARGET_CIDR ]]; then
+    IPV6_NETWORK_NEW=${EXPANDED_IPV6_ADDRESS:1:$(( $IPV6_CIDR / 16 + $IPV6_CIDR / 4))}
+
+    echo "***************************** WARNING ********************************"
+    echo "IPV6_CIDR greater than $TARGET_CIDR may cause your subnet not advertisable." 
+    echo "***************************** WARNING ********************************"
+    echo ""
+
+    if [[ $IPV6_CIDR -gt 96 ]]; then
+        echo "A block smalller than /96 is not supported."
+        exit
+    fi
+
+    if ! [[ "$IPV6_NETWORK_NEW" =~ [0-9a-fA-F]:$ ]]; then
+        IPV6_NETWORK_NEW="${IPV6_NETWORK_NEW}00:"
+        IPV6_CIDR=$(( $IPV6_CIDR + 8 ))
+    fi
+
+    TARGET_CIDR=$(( $IPV6_CIDR + 16 ))
+
+    TUNNEL_ID_MAX=4095
+
+    validate_tunnel_id
+
+    SN_IN_HEX=$(printf '%03x' $TUNNEL_ID)
+
+    # For Endpoints IPV6_NETWORK:1001::/80
+    # For Subnets   IPV6_NETWORK:2001::/80
+
+    ENDPOINT_PREFIX="${IPV6_NETWORK_NEW}1${SN_IN_HEX}::"
+    SUBNET_PREFIX="${IPV6_NETWORK_NEW}2${SN_IN_HEX}::"
+
+else 
+    # parse block and create correct IP    
+ 
+    if [[ $IPV6_CIDR -le 48 ]]; then
+        IPV6_CIDR=48;
+    fi   
+
+    CIDR_DIFF=$(( $TARGET_CIDR - $IPV6_CIDR ))
+    CIDR_DIFF_EXP=$(( $CIDR_DIFF - 1 ))
+    CIDR_DIFF_NUMBITS=$(( $CIDR_DIFF / 4 ))
+
+    TUNNEL_ID_MAX=$(( 2 ** $CIDR_DIFF_EXP - 1 ))
+    validate_tunnel_id
+
+    IPV6_NETWORK_NEW=${EXPANDED_IPV6_ADDRESS:1:$(( $IPV6_CIDR / 16 + $IPV6_CIDR / 4 ))}
+
+    if [[ $CIDR_DIFF_EXP -eq 15 ]]; then
+        FORMAT='%04x'
+    else 
+        FORMAT='%02x'
+    fi
+
+    SN_IN_HEX=$(printf $FORMAT $TUNNEL_ID)
+    ENDPOINT_PREFIX="${IPV6_NETWORK_NEW}${SN_IN_HEX}::"
+
+    SN_IN_HEX=$(printf $FORMAT $(($TUNNEL_ID | 1 << $CIDR_DIFF_EXP)))
+    SUBNET_PREFIX="${IPV6_NETWORK_NEW}${SN_IN_HEX}::"
+fi
+
+# Tunnel Name
+TUNNEL_NAME=tun_6in4_$TUNNEL_ID
+
+# Tunnel Mode, must be sit
+TUNNEL_MODE=sit
+
+# Tunnel TTL
+TUNNEL_TTL=255
+
+# Read Interface
+INTERFACE=$(awk -F "=" '/^INTERFACE/ {print $2}' $CONFIG_FILE)
+if [[ "$INTERFACE" == "" ]]; then
+    echo "Missing INTERFACE"
+    exit
+fi   
+
+# Read Link MTU
+LINK_MTU=$(awk -F "=" '/^LINK_MTU/ {print $2}' $CONFIG_FILE)
+if [[ "$LINK_MTU" == "" ]]; then
+    LINK_MTU=1480
+fi   
+
+
+# Local IP from INTERFACE
+LOCAL_IP=$(ip -f inet addr show ${INTERFACE} scope global |grep inet | awk '{print $2}' | awk -F '/' '{print $1}')
+# Remote IP from args
+REMOTE_IP=$3
+
+if ! [[ "$LOCAL_IP" =~ $IPV4_REGEXP ]]; then
+    echo "Invalid Local IP"
+    exit
+fi
+
+# IPv4 Simple Regular Expression
+IPV4_REGEXP=^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$
+
+require_remote_ip() {
+    if ! [[ "$REMOTE_IP" =~ $IPV4_REGEXP ]]; then
+        echo "Bad Client IP"
+        usage
+        exit
+    fi
+}
+
+case "$1" in 
+    add)
+        require_remote_ip
+
+        ip tunnel add $TUNNEL_NAME mode $TUNNEL_MODE remote $REMOTE_IP local $LOCAL_IP ttl $TUNNEL_TTL dev $INTERFACE > /dev/null 2>&1
+        if [[ $? -ne 0 ]]; then
+            echo "Failed to add tunnel $TUNNEL_ID for $REMOTE_IP"
+            exit
+        fi
+        ip link set $TUNNEL_NAME up mtu $LINK_MTU
+        ip addr add "${ENDPOINT_PREFIX}1/${TARGET_CIDR}" dev $TUNNEL_NAME
+        ip route add "${SUBNET_PREFIX}/${TARGET_CIDR}" dev $TUNNEL_NAME
+
+        echo "Please set up tunnel on your machine with following parameters:"
+        echo "    Server IPv4 Address:        $LOCAL_IP"
+        echo "    Server IPv6 Address:        ${ENDPOINT_PREFIX}1/${TARGET_CIDR}"
+        echo "    Client IPv4 Address:        $REMOTE_IP"
+        echo "    Client IPv6 Address:        ${ENDPOINT_PREFIX}2/${TARGET_CIDR}"
+        echo "    Routed /${TARGET_CIDR}:                 ${SUBNET_PREFIX}/${TARGET_CIDR}"
+        echo ""
+        echo "If you don't have a static IP, set your local to 0.0.0.0 and invoke update api to update your endpoint"
+        echo ""
+    ;;
+    
+    update)
+        require_remote_ip
+
+        TUNNEL_DETAIL=$(ip tunnel show |grep "${TUNNEL_NAME}:")
+        if [[ -z $TUNNEL_DETAIL ]]; then
+            echo "Tunnel $TUNNEL_ID not found"
+            exit
+        fi
+
+        TUNNEL_IP_SAME=$(echo $TUNNEL_DETAIL | grep "remote $REMOTE_IP")
+        if [[ -n $TUNNEL_IP_SAME ]]; then
+            echo "No need to update $TUNNEL_ID"
+            exit
+        fi
+    
+        ip tunnel change $TUNNEL_NAME remote $REMOTE_IP >/dev/null 2>&1
+        if [[ $? == 0 ]]; then
+            echo "Tunnel $TUNNEL_ID updated to $REMOTE_IP"
+        else
+            echo "Failed to update $TUNNEL_ID"
+        fi
+    ;;
+    
+    
+    del)
+        ip tunnel del $TUNNEL_NAME >/dev/null 2>&1
+        if [[ $? == 0 ]]; then
+            echo "Tunnel $TUNNEL_ID was deleted successfully"
+        else 
+            echo "Failed to delete $TUNNEL_ID"
+        fi
+    ;;
+    
+    *) 
+        usage
+esac
+
+# EOF
+
