@@ -49,7 +49,7 @@ If your IPV6_CIDR is smaller than /64, assigned blocks are /64; if smaller than 
 
 If IPV6_CIDR is greater than /64, assigned blocks are /(IPV6_CIDR + 16 [ + 8 ]), e.g.: 64->80, 72->96, 80->96
 
-*Case: 64*
+*Case: 56*
 
 
 ### INTERFACE
