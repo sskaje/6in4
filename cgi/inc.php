@@ -18,6 +18,8 @@ $ip = isset($_GET['ip']) && $_GET['ip'] ? $_GET['ip'] : '';
 if (!$ip) {
 	if (isset($_SERVER['HTTP_INCAP_CLIENT_IP'])) {
 		$ip = $_SERVER['HTTP_INCAP_CLIENT_IP'];
+	} else if (isset($_SERVER['HTTP_CF_CONNECTING_IP'])) {
+		$ip = $_SERVER['HTTP_CF_CONNECTING_IP'];
 	} else {
 		$ip = $_SERVER['REMOTE_ADDR'];
 	}
