@@ -162,6 +162,14 @@ if [[ "$INTERFACE" == "" ]]; then
     exit
 fi   
 
+
+# Read Local IP
+LOCAL_IP=$(awk -F "=" '/^LOCAL_IP/ {print $2}' $CONFIG_FILE)
+if [[ "$LOCAL_IP" == "" ]]; then
+    LOCAL_IP=$(ip -f inet addr show ${INTERFACE} scope global |grep inet | awk '{print $2}' | awk -F '/' '{print $1}')
+
+fi   
+
 # Read Link MTU
 LINK_MTU=$(awk -F "=" '/^LINK_MTU/ {print $2}' $CONFIG_FILE)
 if [[ "$LINK_MTU" == "" ]]; then
@@ -170,7 +178,7 @@ fi
 
 
 # Local IP from INTERFACE
-LOCAL_IP=$(ip -f inet addr show ${INTERFACE} scope global |grep inet | awk '{print $2}' | awk -F '/' '{print $1}')
+# LOCAL_IP=$(ip -f inet addr show ${INTERFACE} scope global |grep inet | awk '{print $2}' | awk -F '/' '{print $1}')
 # Remote IP from args
 REMOTE_IP=$3
 
