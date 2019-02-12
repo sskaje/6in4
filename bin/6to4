@@ -163,13 +163,6 @@ if [[ "$INTERFACE" == "" ]]; then
 fi   
 
 
-# Read Local IP
-LOCAL_IP=$(awk -F "=" '/^LOCAL_IP/ {print $2}' $CONFIG_FILE)
-if [[ "$LOCAL_IP" == "" ]]; then
-    LOCAL_IP=$(ip -f inet addr show ${INTERFACE} scope global |grep inet | awk '{print $2}' | awk -F '/' '{print $1}')
-
-fi   
-
 # Read Link MTU
 LINK_MTU=$(awk -F "=" '/^LINK_MTU/ {print $2}' $CONFIG_FILE)
 if [[ "$LINK_MTU" == "" ]]; then
@@ -177,8 +170,21 @@ if [[ "$LINK_MTU" == "" ]]; then
 fi   
 
 
-# Local IP from INTERFACE
-# LOCAL_IP=$(ip -f inet addr show ${INTERFACE} scope global |grep inet | awk '{print $2}' | awk -F '/' '{print $1}')
+# Read Local IP
+BIND_IP=$(awk -F "=" '/^BIND_IP/ {print $2}' $CONFIG_FILE)
+if [[ -z "$BIND_IP" ]]; then
+    # Read first IP if BIND_IP is not set
+    LOCAL_IP=$(ip -f inet addr show ${INTERFACE} scope global |grep inet | awk '{print $2}' | awk -F '/' '{print $1}' | head -n 1)
+else
+    # Check if BIND_IP exists
+    LOCAL_IP=$(ip -f inet addr show ${INTERFACE} scope global |grep inet | awk '{print $2}' | awk -F '/' '{print $1}' | grep "$BIND_IP")
+
+    if [[ -z "$LOCAL_IP" ]]; then
+        echo "BIND_IP '${BIND_IP}' not found on ${INTERFACE}"
+	exit
+    fi
+fi   
+
 # Remote IP from args
 REMOTE_IP=$3
 
